@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=tenant_db
+      - POSTGRES_USER=tenant_user
+      - POSTGRES_PASSWORD=tenant_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenant_user -d tenant_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=tenant_user
+      - DB_PASSWORD=tenant_pass
+      - DB_NAME=tenant_db
+      - LISTEN_PORT=6432
+      - LISTEN_ADDR=*
+      - AUTH_TYPE=md5
+      - MAX_CLIENT_CONN=100
+      - DEFAULT_POOL_SIZE=20
+      - POOL_MODE=transaction
+    ports:
+      - "6432:6432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 6432"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    command: >
+      sh -c "
+        echo 'Waiting for pgbouncer...' &&
+        while ! nc -z pgbouncer 6432; do
+          sleep 1
+        done &&
+        echo 'PgBouncer is up!' &&
+        python manage.py makemigrations core &&
+        python manage.py migrate_schemas --shared &&
+        python manage.py migrate_schemas --tenant &&
+        python manage.py init_tenants &&
+        python manage.py create_public_superuser &&
+        python manage.py collectstatic --noinput &&
+        python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=1
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  static_volume:
